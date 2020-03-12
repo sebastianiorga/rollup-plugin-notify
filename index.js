@@ -41,7 +41,9 @@ if (os.platform() === 'win32' && os.release().startsWith('10.')) {
 
 var iconError = path.join(__dirname, 'rollup-error.png')
 var iconSuccess = path.join(__dirname, 'rollup-success.png')
-var iconWarning = path.join(__dirname, 'rollup.png')
+var iconWarning = path.join(__dirname, 'rollup-warning.png')
+
+var detailedErrorMessages = false;
 
 // Calculates how many space characters should be displayed in place of given string argument.
 // We sum widths of each character in the string because the text cannot be displayed in monospace font.
@@ -88,7 +90,6 @@ function extractMessage(error) {
     var message = error.message
     function stripFilePath() {
       var index = message.indexOf(filepath)
-      console.log(index, filepath.length)
       message = message.slice(0, index) + message.slice(filepath.length + 1)
       message = message.trim()
     }
@@ -124,6 +125,10 @@ function getFileName(filepath) {
 // It then recalculates how many spaces and carres should be displayed (with non-monospace font) in the caret line
 // and returns both code line & caret line.
 function createCodeBlock(frame) {
+  if (detailedErrorMessages) {
+    return createFullCodeBlock(frame);
+  }
+
   var lines = sanitizeLines(frame)
   var caretLineOriginal = getCaretLine(lines)
   var codeLine = lines[lines.indexOf(caretLineOriginal) - 1]
@@ -145,13 +150,21 @@ function createCodeBlock(frame) {
   return [codeLine, caretLine].join('\n')
 }
 
+function createFullCodeBlock(frame) {
+  var WEIRD_SPACE = " "; // notify-osd strips whitespace, ruining the formatting of the caret. This unicode space doesn't get stripped.
+  return (frame || '').replace(/^\s/g, WEIRD_SPACE).replace(/\n /g, "\n" + WEIRD_SPACE).replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&/g, '&amp;');
+}
+
 function notifyError(error) {
   var message = extractMessage(error)
   if (error.plugin === undefined && error.frame) {
     message += '\n' + createCodeBlock(error.frame)
   } else if (error.codeFrame) {
     message += '\n' + createCodeBlock(error.codeFrame)
+  } else if (error.frame) {
+    message += '\n' + createCodeBlock(error.frame)
   }
+
   var line
   var column
   var filepath
@@ -175,34 +188,42 @@ function notifyError(error) {
   }
   // Make title from available information
   var sections = []
+  if (error.plugin)
+    sections.push('(plugin ' + error.plugin + ')')
   if (filepath)
     sections.push(getFileName(filepath))
   if (line !== undefined && column !== undefined)
     sections.push(`(${line}:${column})`)
-  if (error.plugin)
-    sections.push(error.plugin)
-  else if (error.code)
-    sections.push(error.code)
+  else if (error.name)
+    sections.push(error.name)
   var title = sections.filter(a => a).join(' ') || `Rollup error: ${error.code}`
   title = '❌ ' + title;
   // Show notification
   notifier.notify({title, message, icon: iconError})
 }
 
+var warningCount = 0
+
 function notifySuccess() {
-  var title = '✅ Build successful'
-  var message = 'Compiled without problems'
-  notifier.notify({title, message, icon: iconSuccess})
+  var title = warningCount  ? '⚠️ Build successful with warnings' : '✅ Build successful'
+  var message = warningCount ? `Compiled with ${warningCount} warnings` : 'Compiled without problems'
+  var icon = warningCount ? iconWarning : iconSuccess;
+  notifier.notify({title, message, icon: icon})
 }
 
 function notifyWarning(warning) {
-  console.log(warning);
-  var title = '⚠ Build successful'
-  var message = 'Compiled with warnings'
+  var title = warning.message;
+  if (warning.plugin) {
+    title = '(plugin: ' + warning.plugin + ') ' + title;
+  }
+  var message = createCodeBlock(warning.frame);
+  title = '⚠️ ' + title;
   notifier.notify({title, message, icon: iconWarning})
 }
 
 module.exports = function notify(options = {}) {
+  detailedErrorMessages = options.detailedErrorMessages;
+
   return {
     name: 'notify',
     buildEnd(err) {
@@ -210,9 +231,11 @@ module.exports = function notify(options = {}) {
         notifyError(err)
       else if (options && options.success === true)
         notifySuccess()
+        warningCount = 0
     },
     warn(warning) {
-      notifyWarning(warning);
+      warningCount += 1
+      notifyWarning(warning)
     }
   }
 }
